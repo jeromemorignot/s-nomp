@@ -7,11 +7,13 @@ var os = require('os');
 
 var algos = require('stratum-pool/lib/algoProperties.js');
 
+var CreateRedisClient = require('./createRedisClient.js');
+
 // redis callback Ready check failed bypass trick
-function rediscreateClient(port, host, pass) {
-    var client = redis.createClient(port, host);
-    if (pass) {
-        client.auth(pass);
+function rediscreateClient(redisConfig) {
+    var client = CreateRedisClient(redisConfig);
+    if (redisConfig.password) {
+        client.auth(redisConfig.password);
     }
     return client;
 }
@@ -79,19 +81,20 @@ module.exports = function(logger, portalConfig, poolConfigs){
 
         for (var i = 0; i < redisClients.length; i++){
             var client = redisClients[i];
-            if (client.client.port === redisConfig.port && client.client.host === redisConfig.host){
+            if ((client.client.port === redisConfig.port && client.client.host === redisConfig.host) ||
+                (client.client.path !== null && client.client.path === redisConfig.socket)) {
                 client.coins.push(coin);
                 return;
             }
         }
         redisClients.push({
             coins: [coin],
-            client: rediscreateClient(redisConfig.port, redisConfig.host, redisConfig.password)
+            client: rediscreateClient(redisConfig)
         });
     });
 
     function setupStatsRedis(){
-        redisStats = redis.createClient(portalConfig.redis.port, portalConfig.redis.host);
+        redisStats = CreateRedisClient(portalConfig.redis);
         redisStats.on('error', function(err){
         redisStats.auth(portalConfig.redis.password);
         });
@@ -498,14 +501,19 @@ module.exports = function(logger, portalConfig, poolConfigs){
                     var miner = parts[1].split('.')[0];
                     var worker = parts[1];
                     var diff = Math.round(parts[0] * 8192);
+                    var lastShare = parseInt(parts[2]);
                     if (workerShares > 0) {
                         coinStats.shares += workerShares;
                         // build worker stats
                         if (worker in coinStats.workers) {
                             coinStats.workers[worker].shares += workerShares;
                             coinStats.workers[worker].diff = diff;
+                            if (lastShare > coinStats.workers[worker].lastShare) {
+                                coinStats.workers[worker].lastShare = lastShare;
+                            }
                         } else {
                             coinStats.workers[worker] = {
+                                lastShare: 0,
                                 name: worker,
                                 diff: diff,
                                 shares: workerShares,
@@ -523,8 +531,12 @@ module.exports = function(logger, portalConfig, poolConfigs){
                         // build miner stats
                         if (miner in coinStats.miners) {
                             coinStats.miners[miner].shares += workerShares;
+                            if (lastShare > coinStats.miners[miner].lastShare) {
+                                coinStats.miners[miner].lastShare = lastShare;
+                            }
                         } else {
                             coinStats.miners[miner] = {
+                                lastShare: 0,
                                 name: miner,
                                 shares: workerShares,
                                 invalidshares: 0,
@@ -544,6 +556,7 @@ module.exports = function(logger, portalConfig, poolConfigs){
                             coinStats.workers[worker].diff = diff;
                         } else {
                             coinStats.workers[worker] = {
+                                lastShare: 0,
                                 name: worker,
                                 diff: diff,
                                 shares: 0,
@@ -563,6 +576,7 @@ module.exports = function(logger, portalConfig, poolConfigs){
                             coinStats.miners[miner].invalidshares -= workerShares; // workerShares is negative number!
                         } else {
                             coinStats.miners[miner] = {
+                                lastShare: 0,
                                 name: miner,
                                 shares: 0,
                                 invalidshares: -workerShares,
